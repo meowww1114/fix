@@ -85,6 +85,42 @@ class ServerProcess:
         self.port = free_port()
         self.proc: subprocess.Popen[bytes] | None = None
 
+    # def __enter__(self) -> "ServerProcess":
+    #     if not SERVER_PATH.is_file():
+    #         raise JudgeError("./server does not exist. Run `make` first.")
+
+    #     self.proc = subprocess.Popen(
+    #         [str(SERVER_PATH), str(self.port)],
+    #         cwd=ROOT,
+    #         stdin=subprocess.DEVNULL,
+    #         stdout=subprocess.DEVNULL,
+    #         stderr=subprocess.DEVNULL,
+    #     )
+
+    #     deadline = time.monotonic() + 2.0
+    #     while time.monotonic() < deadline:
+    #         if self.proc.poll() is not None:
+    #             raise JudgeError("server exited before accepting connections")
+    #         # try:
+    #         #     with socket.create_connection(("127.0.0.1", self.port), timeout=0.1):
+    #         #         return self
+    #         # except OSError:
+    #         #     time.sleep(0.03)
+    #         try:
+    #             with socket.create_connection(("127.0.0.1", self.port), timeout=0.1) as sock:
+    #                 sock.settimeout(0.2)
+    #                 data = b""
+    #                 while len(data) < len(WELCOME):
+    #                     chunk = sock.recv(4096)
+    #                     if not chunk:
+    #                         break
+    #                     data += chunk
+                    
+    #                 return self
+    #         except OSError:
+    #             time.sleep(0.03)
+
+    #     raise JudgeError("server did not start within 2 seconds")
     def __enter__(self) -> "ServerProcess":
         if not SERVER_PATH.is_file():
             raise JudgeError("./server does not exist. Run `make` first.")
@@ -94,20 +130,16 @@ class ServerProcess:
             cwd=ROOT,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=None,
         )
 
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + 0.5
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
                 raise JudgeError("server exited before accepting connections")
-            try:
-                with socket.create_connection(("127.0.0.1", self.port), timeout=0.1):
-                    return self
-            except OSError:
-                time.sleep(0.03)
+            time.sleep(0.03)
 
-        raise JudgeError("server did not start within 2 seconds")
+        return self
 
     def __exit__(self, *_: object) -> None:
         if self.proc is None:
@@ -121,12 +153,28 @@ class ServerProcess:
 
 
 class Client:
+    # def __init__(self, port: int) -> None:
+    #     self.sock = socket.create_connection(("127.0.0.1", port), timeout=1.0)
+    #     self.sock.settimeout(1.0)
+    #     self.buffer = b""
+    #     self.expect(WELCOME)
     def __init__(self, port: int) -> None:
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=1.0)
-        self.sock.settimeout(1.0)
-        self.buffer = b""
-        self.expect(WELCOME)
+        deadline = time.monotonic() + 2.0
+        last_error: OSError | None = None
 
+        while time.monotonic() < deadline:
+            try:
+                self.sock = socket.create_connection(("127.0.0.1", port), timeout=1.0)
+                self.sock.settimeout(1.0)
+                self.buffer = b""
+                self.expect(WELCOME)
+                return
+            except OSError as exc:
+                last_error = exc
+                time.sleep(0.03)
+
+        raise JudgeError(f"could not connect to server: {last_error}")
+        
     def close(self) -> None:
         self.sock.close()
 
@@ -195,6 +243,10 @@ def task_1_2() -> None:
                 b">>> Account 902001 balance: 570\n"
                 + READY_PROMPT,
             )
+            client.command(
+                "read 902001",
+                b">>> Account 902001 balance: 570\n" + READY_PROMPT,
+            )
             client.command_and_expect_close("exit", b">>> Client exit.\n")
         finally:
             client.close()
@@ -233,7 +285,6 @@ def task_1_3() -> None:
 
     if read_balance(902001) != 500:
         raise JudgeError("abort or rejected add modified accountRecord")
-
 
 def task_1_4() -> None:
     write_records(DEFAULT_BALANCES)
