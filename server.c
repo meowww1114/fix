@@ -76,7 +76,11 @@ static void send_invalid_command(int fd);
 /* ============================================================
  * main
  * ============================================================ */
-
+/*
+ * This part is needed for TODO 5. You may skip it first and come back
+ * after finishing TODO 1-4.
+ */
+ 
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "usage: %s [port]\n", argv[0]);
@@ -104,64 +108,100 @@ int main(int argc, char **argv) {
             svr.hostname, svr.port, svr.listen_fd, maxfd);
 
     /*
-     * ========================================================
-     * TODO 1: I/O Multiplexing
-     * ========================================================
-     *
-     * Replace the temporary one-client-at-a-time loop below
-     * with select() or poll().
-     *
-     * The event loop should monitor:
-     *
-     *   1. svr.listen_fd
-     *      -> accept a new client
-     *
-     *   2. connected client sockets
-     *      -> recv_into_buffer()
-     *      -> repeatedly pop_command()
-     *      -> handle_command()
-     *
-     * On disconnect/error:
-     *
-     *      close_client()
-     *
-     * Do NOT block on one idle client.
-     */
+    * ========================================================
+    * TODO 5: Multi-client event loop
+    * ========================================================
+    *
+    * Replace the temporary one-client-at-a-time loop below
+    * with select() or poll().
+    *
+    * The event loop should monitor:
+    *
+    *   1. svr.listen_fd
+    *      -> accept a new client
+    *
+    *   2. connected client sockets
+    *      -> recv_into_buffer()
+    *      -> repeatedly pop_command()
+    *      -> handle_command()
+    *
+    * On disconnect/error:
+    *
+    *      close_client()
+    *
+    * Do NOT block on one idle client.
+    */
+    fd_set master_set;
+    fd_set read_set;
 
-    /*
-     * Temporary starter implementation.
-     * Replace this entire loop for TODO 1.
-     */
-    while (1) {
-        int conn_fd = accept_conn();
-        if (conn_fd < 0) {
-            continue;
+    FD_ZERO(&master_set);
+    FD_SET(svr.listen_fd, &master_set);
+
+    int fdmax = svr.listen_fd;
+
+        while (1) {
+        read_set = master_set;
+
+        if (select(fdmax + 1, &read_set, NULL, NULL, NULL) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            ERR_EXIT("select");
         }
 
-        request *reqP = &requestP[conn_fd];
+    if (FD_ISSET(svr.listen_fd, &read_set)) {
+        while (1) {
+            int conn_fd = accept_conn();
 
-        if (send_welcome(conn_fd) < 0) {
-            close(conn_fd);
-            free_request(reqP);
-            continue;
-        }
+            if (conn_fd < 0) {
+                break;
+            }
 
-        int ret = recv_into_buffer(reqP);
+            if (conn_fd >= FD_SETSIZE) {
+                close(conn_fd);
+            } else if (send_welcome(conn_fd) < 0) {
+                close(conn_fd);
+                free_request(&requestP[conn_fd]);
+            } else {
+                FD_SET(conn_fd, &master_set);
 
-        if (ret > 0) {
+                if (conn_fd > fdmax) {
+                   fdmax = conn_fd;
+                }
+            }
+        }  
+
+        continue;
+    }
+
+        for (int fd = 0; fd <= fdmax; ++fd) {
+            if (fd == svr.listen_fd || !FD_ISSET(fd, &read_set)) {
+                continue;
+            }
+
+            request *reqP = &requestP[fd];
+            int ret = recv_into_buffer(reqP);
+
+            if (ret <= 0) {
+                close_client(fd, &master_set);
+                continue;
+            }
+
             char command[MAX_MSG_LEN];
 
-            while (pop_command(reqP, command, sizeof(command)) > 0) {
-                fprintf(stderr, "received: [%s]\n", command);
+            while ((ret = pop_command(reqP, command, sizeof(command))) > 0) {
 
                 if (handle_command(reqP, command)) {
+                    close_client(fd, &master_set);
                     break;
                 }
             }
-        }
 
-        close(conn_fd);
-        free_request(reqP);
+            if (ret < 0) {
+                send_invalid_command(fd);
+                close_client(fd, &master_set);
+            }
+        }
     }
 
     close(record_fd);
@@ -170,8 +210,6 @@ int main(int argc, char **argv) {
 
     return EXIT_SUCCESS;
 }
-
-
 /* ============================================================
  * Input buffering
  * ============================================================ */
@@ -207,7 +245,7 @@ static int recv_into_buffer(request *reqP) {
 
     /*
      * ========================================================
-     * TODO 2: Fragmented TCP input
+     * TODO 6: Fragmented TCP input
      * ========================================================
      *
      * TCP is a byte stream. One command may arrive through
@@ -233,11 +271,15 @@ static int recv_into_buffer(request *reqP) {
      *   - update reqP->buf_len
      */
 
-    (void)incoming;
-    (void)nread;
+    if (reqP->buf_len + (size_t)nread > MAX_MSG_LEN) {
+    return -1;
+    }
+
+    memcpy(reqP->buf + reqP->buf_len, incoming, (size_t)nread);
+    reqP->buf_len += (size_t)nread;
 
     return 1;
-}
+    }
 
 
 /* ============================================================
@@ -315,71 +357,261 @@ static int pop_command(request *reqP, char *command, size_t command_size) {
  *   1 : close connection
  */
 static int handle_command(request *reqP, const char *command) {
-    /*
+       /*
      * ========================================================
-     * TODO 3: READY / TRANSACTION state machine
+     * TODO 1: READY basic commands
      * ========================================================
      *
-     * READY:
+     * In READY state, support:
      *
-     *     read <account_id>
-     *     begin <account_id>
-     *     exit
+     *   read <account_id>
+     *   exit
      *
+     * read should:
      *
-     * TRANSACTION:
-     *
-     *     add <delta>
-     *     commit
-     *     abort
-     *     exit
-     *
-     *
-     * Suggested structure:
-     *
-     *     if (reqP->state == READY) {
-     *         ...
-     *     }
-     *
-     *     if (reqP->state == TRANSACTION) {
-     *         ...
-     *     }
-     *
-     *
-     * read:
-     *     acquire F_RDLCK
-     *     read_account()
-     *     release lock immediately
-     *
-     * begin:
-     *     check account_owner[]
-     *     acquire F_WRLCK
-     *     read current balance
-     *     enter TRANSACTION
-     *     keep the write lock
-     *
-     * add:
-     *     modify pending_balance only
-     *
-     * commit:
-     *     write_account()
-     *     release transaction lock
-     *     return to READY
-     *
-     * abort:
-     *     do NOT modify accountRecord
-     *     release transaction lock
-     *     return to READY
-     *
-     * exit / invalid command / disconnect:
-     *     release any active transaction first
+     *   1. validate the account id
+     *   2. read the corresponding accountRecord entry
+     *   3. send the balance back to the client
+     *   4. return to READY prompt
      */
 
-    (void)reqP;
-    (void)command;
+    /*
+     * ========================================================
+     * TODO 2: Transaction commit workflow
+     * ========================================================
+     *
+     * Support:
+     *
+     *   begin <account_id>
+     *   add <delta>
+     *   commit
+     *
+     * begin should enter TRANSACTION state.
+     * add should update pending_balance only.
+     * commit should write pending_balance back to accountRecord.
+     */
 
-    return 0;
-}
+    /*
+     * ========================================================
+     * TODO 3: Abort and cleanup
+     * ========================================================
+     *
+     * Support:
+     *
+     *   abort
+     *   exit during transaction
+     *
+     * abort should discard pending_balance and return to READY.
+     * exit during transaction should release any held state before closing.
+     */
+
+    /*
+     * ========================================================
+     * TODO 4: Invalid command handling
+     * ========================================================
+     *
+     * Invalid commands or commands used in the wrong state should send:
+     *
+     *   >>> [Error] Invalid command.
+     *
+     * Then close the connection.
+     */
+    if (reqP->state == READY) {
+        if (strcmp(command, "exit") == 0) {
+            const char *msg = ">>> Client exit.\n";
+            (void)write_all(reqP->conn_fd, msg, strlen(msg));
+            return 1;
+        }
+
+        if (strncmp(command, "read ", 5) == 0) {
+            const char *arg = command + 5;
+            int account_id;
+            int idx;
+            int lock_ret;
+            account_record record;
+            char response[128];
+
+            if (parse_account_id(arg, &account_id) < 0) {
+                send_invalid_command(reqP->conn_fd);
+                return 1;
+            }
+
+            idx = account_index(account_id);
+            fflush(stderr);
+
+            if (account_owner[idx] != -1 && account_owner[idx] != reqP->conn_fd) {
+                send_locked(reqP->conn_fd);
+                (void)write_all(reqP->conn_fd, ready_prompt, strlen(ready_prompt));
+                return 0;
+            }
+
+            lock_ret = try_record_lock(account_id, F_RDLCK);
+            if (lock_ret == 0) {
+                send_locked(reqP->conn_fd);
+                (void)write_all(reqP->conn_fd, ready_prompt, strlen(ready_prompt));
+                return 0;
+            }
+
+            if (lock_ret < 0) {
+                send_invalid_command(reqP->conn_fd);
+                return 1;
+            }
+
+            if (read_account(account_id, &record) < 0) {
+                (void)unlock_record(account_id);
+                send_invalid_command(reqP->conn_fd);
+                return 1;
+            }
+
+            (void)unlock_record(account_id);
+
+            snprintf(response, sizeof(response),
+                    ">>> Account %d balance: %d\n",
+                    account_id, record.balance);
+
+            (void)write_all(reqP->conn_fd, response, strlen(response));
+            (void)write_all(reqP->conn_fd, ready_prompt, strlen(ready_prompt));
+
+            return 0;
+        }
+
+        if (strncmp(command, "begin ", 6) == 0) {
+            const char *arg = command + 6;
+            int account_id;
+            int idx;
+            int lock_ret;
+            account_record record;
+            char response[160];
+
+            if (parse_account_id(arg, &account_id) < 0) {
+                send_invalid_command(reqP->conn_fd);
+                return 1;
+            }
+
+            idx = account_index(account_id);
+
+            if (account_owner[idx] != -1) {
+                send_locked(reqP->conn_fd);
+                (void)write_all(reqP->conn_fd, ready_prompt, strlen(ready_prompt));
+                return 0;
+            }
+
+            lock_ret = try_record_lock(account_id, F_WRLCK);
+            if (lock_ret == 0) {
+                send_locked(reqP->conn_fd);
+                (void)write_all(reqP->conn_fd, ready_prompt, strlen(ready_prompt));
+                return 0;
+            }
+
+            if (lock_ret < 0 || read_account(account_id, &record) < 0) {
+                send_invalid_command(reqP->conn_fd);
+                return 1;
+            }
+
+            reqP->state = TRANSACTION;
+            reqP->account_index = idx;
+            reqP->original_balance = record.balance;
+            reqP->pending_balance = record.balance;
+            account_owner[idx] = reqP->conn_fd;
+
+            fflush(stderr);
+
+            snprintf(response, sizeof(response),
+                     ">>> Transaction started on account %d.\n"
+                     ">>> Current balance: %d\n",
+                     account_id, record.balance);
+
+            (void)write_all(reqP->conn_fd, response, strlen(response));
+            (void)write_all(reqP->conn_fd, transaction_prompt, strlen(transaction_prompt));
+            return 0;
+        }
+
+        send_invalid_command(reqP->conn_fd);
+        return 1;
+    }
+
+    if (reqP->state == TRANSACTION) {
+        int account_id = ACCOUNT_ID_START + reqP->account_index;
+
+        if (strcmp(command, "exit") == 0) {
+            const char *msg = ">>> Client exit.\n";
+            cleanup_transaction(reqP);
+            (void)write_all(reqP->conn_fd, msg, strlen(msg));
+            return 1;
+        }
+
+        if (strncmp(command, "add ", 4) == 0) {
+            const char *arg = command + 4;
+            int delta;
+            long next_balance;
+            char response[128];
+
+            if (parse_int_strict(arg, &delta) < 0) {
+                send_invalid_command(reqP->conn_fd);
+                return 1;
+            }
+
+            next_balance = (long)reqP->pending_balance + delta;
+
+            if (next_balance < 0 || next_balance > MAX_BALANCE) {
+                const char *msg = ">>> [Error] Balance out of range.\n";
+                (void)write_all(reqP->conn_fd, msg, strlen(msg));
+                (void)write_all(reqP->conn_fd, transaction_prompt, strlen(transaction_prompt));
+                return 0;
+            }
+
+            reqP->pending_balance = (int)next_balance;
+
+            snprintf(response, sizeof(response),
+                     ">>> Pending balance: %d\n",
+                     reqP->pending_balance);
+
+            (void)write_all(reqP->conn_fd, response, strlen(response));
+            (void)write_all(reqP->conn_fd, transaction_prompt, strlen(transaction_prompt));
+            return 0;
+        }
+
+        if (strcmp(command, "commit") == 0) {
+            account_record record;
+            char response[160];
+
+            record.id = account_id;
+            record.balance = reqP->pending_balance;
+
+            if (write_account(account_id, &record) < 0) {
+                send_invalid_command(reqP->conn_fd);
+                cleanup_transaction(reqP);
+                return 1;
+            }
+
+            snprintf(response, sizeof(response),
+                     ">>> Transaction committed.\n"
+                     ">>> Account %d balance: %d\n",
+                     account_id, record.balance);
+
+            cleanup_transaction(reqP);
+
+            (void)write_all(reqP->conn_fd, response, strlen(response));
+            (void)write_all(reqP->conn_fd, ready_prompt, strlen(ready_prompt));
+            return 0;
+        }
+
+        if (strcmp(command, "abort") == 0) {
+            const char *msg = ">>> Transaction aborted.\n";
+            cleanup_transaction(reqP);
+            (void)write_all(reqP->conn_fd, msg, strlen(msg));
+            (void)write_all(reqP->conn_fd, ready_prompt, strlen(ready_prompt));
+            return 0;
+        }
+
+        send_invalid_command(reqP->conn_fd);
+        cleanup_transaction(reqP);
+        return 1;
+    }
+
+    send_invalid_command(reqP->conn_fd);
+    return 1;
+    }
 
 
 /* ============================================================
@@ -467,11 +699,20 @@ static int write_account(int account_id, const account_record *record) {
  * Record locking
  * ============================================================ */
 
-/*
+/* ============================================================
+ * TODO 5: Multi-client record locking
+ * ============================================================ *
+ * Use nonblocking fcntl(F_SETLK) byte-range locks.
+ *
  * Return:
  *   1 : lock successfully acquired
- *   0 : lock conflict
+ *   0 : lock conflict, errno is EACCES or EAGAIN
  *  -1 : unexpected error
+ *
+ * Remember:
+ *   fcntl locks are process-associated, so clients in the same
+ *   server process also need account_owner[] to distinguish which
+ *   client owns each account.
  */
 static int try_record_lock(int account_id, short lock_type) {
     struct flock lock;
@@ -483,31 +724,16 @@ static int try_record_lock(int account_id, short lock_type) {
     lock.l_start = account_offset(account_id);
     lock.l_len = sizeof(account_record);
 
-    /*
-     * ========================================================
-     * TODO 4: Acquire a nonblocking byte-range record lock
-     * ========================================================
-     *
-     * Use:
-     *
-     *     fcntl(record_fd, F_SETLK, &lock)
-     *
-     * F_SETLK must be used instead of F_SETLKW.
-     *
-     * If errno is EACCES or EAGAIN:
-     *
-     *     return 0
-     *
-     * Unexpected failure:
-     *
-     *     return -1
-     *
-     * Success:
-     *
-     *     return 1
-     */
+    
+    if (fcntl(record_fd, F_SETLK, &lock) < 0) {
+        if (errno == EACCES || errno == EAGAIN) {
+            return 0;
+        }
 
-    return -1;
+        return -1;
+    }
+
+    return 1;
 }
 
 
@@ -529,8 +755,12 @@ static int unlock_record(int account_id) {
      * Use fcntl() with F_SETLK.
      */
 
-    return -1;
-}
+    if (fcntl(record_fd, F_SETLK, &lock) < 0) {
+        return -1;
+    }
+
+    return 0;
+    }
 
 
 /* ============================================================
@@ -538,31 +768,43 @@ static int unlock_record(int account_id) {
  * ============================================================ */
 
 static void cleanup_transaction(request *reqP) {
-    /*
+     /*
      * ========================================================
-     * TODO 6: Transaction cleanup
+     * TODO 3: Abort and transaction cleanup
      * ========================================================
      *
      * If this client is currently in TRANSACTION:
      *
-     *     1. find reqP->account_index
-     *     2. release its record lock
-     *     3. clear account_owner[index]
-     *     4. set state back to READY
-     *     5. set account_index to -1
-     *     6. clear original_balance
-     *     7. clear pending_balance
+     *   1. release its record lock
+     *   2. clear account_owner[index]
+     *   3. set state back to READY
+     *   4. set account_index to -1
+     *   5. clear original_balance
+     *   6. clear pending_balance
      *
      * This function must work correctly for:
      *
-     *     abort
-     *     exit
-     *     invalid command
-     *     disconnect
-     *     read/write error
+     *   abort
+     *   exit during transaction
+     *   invalid command
+     *   disconnect
+     *   read/write error
      */
 
-    (void)reqP;
+    if (reqP->state == TRANSACTION && reqP->account_index >= 0) {
+        int account_id = ACCOUNT_ID_START + reqP->account_index;
+
+        (void)unlock_record(account_id);
+
+        if (account_owner[reqP->account_index] == reqP->conn_fd) {
+            account_owner[reqP->account_index] = -1;
+        }
+    }
+
+    reqP->state = READY;
+    reqP->account_index = -1;
+    reqP->original_balance = 0;
+    reqP->pending_balance = 0;
 }
 
 
@@ -604,13 +846,20 @@ static void send_invalid_command(int fd) {
  * ============================================================ */
 
 static int send_welcome(int fd) {
+
     if (write_all(fd, welcome_banner, strlen(welcome_banner)) < 0) {
+        fprintf(stderr, "write welcome banner failed on fd %d: %s\n", fd, strerror(errno));
+        fflush(stderr);
         return -1;
     }
 
     if (write_all(fd, ready_prompt, strlen(ready_prompt)) < 0) {
+        fprintf(stderr, "write ready prompt failed on fd %d: %s\n", fd, strerror(errno));
+        fflush(stderr);
         return -1;
     }
+
+    fflush(stderr);
 
     return 0;
 }
@@ -648,8 +897,7 @@ static int accept_conn(void) {
              "%s",
              inet_ntoa(cliaddr.sin_addr));
 
-    fprintf(stderr, "new connection: fd %d from %s\n",
-            conn_fd, requestP[conn_fd].host);
+    fflush(stderr);
 
     return conn_fd;
 }
@@ -711,8 +959,17 @@ static void init_server(unsigned short port) {
     }
 
     if (listen(svr.listen_fd, 1024) < 0) {
-        ERR_EXIT("listen");
-    }
+    ERR_EXIT("listen");
+}
+
+int flags = fcntl(svr.listen_fd, F_GETFL, 0);
+if (flags < 0) {
+    ERR_EXIT("fcntl F_GETFL");
+}
+
+if (fcntl(svr.listen_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    ERR_EXIT("fcntl F_SETFL");
+}
 
     maxfd = getdtablesize();
 

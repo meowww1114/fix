@@ -192,6 +192,9 @@ class Client:
         self.buffer = self.buffer[len(expected) :]
         if actual != expected:
             raise JudgeError(f"output mismatch\nexpected: {expected!r}\nactual:   {actual!r}")
+    
+    def send_raw(self, data: bytes) -> None:
+        self.sock.sendall(data)
 
     def command(self, command: str, expected: bytes) -> None:
         self.sock.sendall(command.encode() + b"\n")
@@ -208,9 +211,25 @@ class Client:
             raise JudgeError("server did not close the connection") from exc
         if extra:
             raise JudgeError(f"unexpected output before close: {extra!r}")
+    
+ 
+# def task_1_1() -> None:
+#     write_records(DEFAULT_BALANCES)
+#     with ServerProcess() as server:
+#         client = Client(server.port)
+#         try:
+#             client.command(
+#                 "read 902001",
+#                 b">>> Account 902001 balance: 500\n" + READY_PROMPT,
+#             )
+#             client.command_and_expect_close("exit", b">>> Client exit.\n")
+#         finally:
+#             client.close()
 
+##  1. Basic read / exit:
+#   welcome -> multiple reads -> different account offsets -> exit close
 
-def task_1_1() -> None:
+def task_1() -> None:
     write_records(DEFAULT_BALANCES)
     with ServerProcess() as server:
         client = Client(server.port)
@@ -219,16 +238,54 @@ def task_1_1() -> None:
                 "read 902001",
                 b">>> Account 902001 balance: 500\n" + READY_PROMPT,
             )
+            client.command(
+                "read 902010",
+                b">>> Account 902010 balance: 1000000\n" + READY_PROMPT,
+            )
             client.command_and_expect_close("exit", b">>> Client exit.\n")
         finally:
             client.close()
+# def task_1_2() -> None:
+#     write_records(DEFAULT_BALANCES)
+#     with ServerProcess() as server:
+#         client = Client(server.port)
+#         try:
+#             client.command(
+#                 "begin 902001",
+#                 b">>> Transaction started on account 902001.\n"
+#                 b">>> Current balance: 500\n"
+#                 + OP_PROMPT,
+#             )
+#             client.command("add 100", b">>> Pending balance: 600\n" + OP_PROMPT)
+#             client.command("add -30", b">>> Pending balance: 570\n" + OP_PROMPT)
+#             client.command(
+#                 "commit",
+#                 b">>> Transaction committed.\n"
+#                 b">>> Account 902001 balance: 570\n"
+#                 + READY_PROMPT,
+#             )
+#             client.command(
+#                 "read 902001",
+#                 b">>> Account 902001 balance: 570\n" + READY_PROMPT,
+#             )
+#             client.command_and_expect_close("exit", b">>> Client exit.\n")
+#         finally:
+#             client.close()
 
+#     if read_balance(902001) != 570:
+#         raise JudgeError("commit did not update accountRecord")
 
-def task_1_2() -> None:
+##  測資更新2 transaction happy path
+#   read before transaction -> begin -> add -> commit -> read after transaction
+def task_2() -> None:
     write_records(DEFAULT_BALANCES)
     with ServerProcess() as server:
         client = Client(server.port)
         try:
+            client.command(
+                "read 902001",
+                b">>> Account 902001 balance: 500\n" + READY_PROMPT,
+            )
             client.command(
                 "begin 902001",
                 b">>> Transaction started on account 902001.\n"
@@ -237,25 +294,73 @@ def task_1_2() -> None:
             )
             client.command("add 100", b">>> Pending balance: 600\n" + OP_PROMPT)
             client.command("add -30", b">>> Pending balance: 570\n" + OP_PROMPT)
+            client.command("add 200", b">>> Pending balance: 770\n" + OP_PROMPT)
+            client.command("add -70", b">>> Pending balance: 700\n" + OP_PROMPT)
             client.command(
                 "commit",
                 b">>> Transaction committed.\n"
-                b">>> Account 902001 balance: 570\n"
+                b">>> Account 902001 balance: 700\n"
                 + READY_PROMPT,
             )
             client.command(
                 "read 902001",
-                b">>> Account 902001 balance: 570\n" + READY_PROMPT,
+                b">>> Account 902001 balance: 700\n" + READY_PROMPT,
+            )
+            client.command(
+                "read 902002",
+                b">>> Account 902002 balance: 1200\n" + READY_PROMPT,
+            )
+            client.command(
+                "read 902010",
+                b">>> Account 902010 balance: 1000000\n" + READY_PROMPT,
             )
             client.command_and_expect_close("exit", b">>> Client exit.\n")
         finally:
             client.close()
 
-    if read_balance(902001) != 570:
+    if read_balance(902001) != 700:
         raise JudgeError("commit did not update accountRecord")
+    if read_balance(902002) != 1200:
+        raise JudgeError("commit modified account 902002")
+    if read_balance(902010) != 1000000:
+        raise JudgeError("commit modified account 902010")
 
 
-def task_1_3() -> None:
+# def task_1_3() -> None:
+#     write_records(DEFAULT_BALANCES)
+#     with ServerProcess() as server:
+#         client = Client(server.port)
+#         try:
+#             client.command(
+#                 "begin 902001",
+#                 b">>> Transaction started on account 902001.\n"
+#                 b">>> Current balance: 500\n"
+#                 + OP_PROMPT,
+#             )
+#             client.command(
+#                 "add -501",
+#                 b">>> [Error] Balance out of range.\n" + OP_PROMPT,
+#             )
+#             client.command(
+#                 "add 1000000",
+#                 b">>> [Error] Balance out of range.\n" + OP_PROMPT,
+#             )
+#             client.command("abort", b">>> Transaction aborted.\n" + READY_PROMPT)
+#             client.command(
+#                 "read 902001",
+#                 b">>> Account 902001 balance: 500\n" + READY_PROMPT,
+#             )
+#             client.command_and_expect_close("exit", b">>> Client exit.\n")
+#         finally:
+#             client.close()
+
+#     if read_balance(902001) != 500:
+#         raise JudgeError("abort or rejected add modified accountRecord")
+
+##  transaction 裡的錯誤 add 不應污染 pending balance，abort 不應寫檔
+#   add -501 先改 pending 再檢查，導致 pending 變 -1 -> out-of-range 後 connection 被錯誤關掉
+#   out-of-range 後離開 transaction state -> abort 錯誤寫檔 -> abort 後沒有回 READY
+def task_2_1() -> None:
     write_records(DEFAULT_BALANCES)
     with ServerProcess() as server:
         client = Client(server.port)
@@ -270,14 +375,20 @@ def task_1_3() -> None:
                 "add -501",
                 b">>> [Error] Balance out of range.\n" + OP_PROMPT,
             )
+            client.command("add 20", b">>> Pending balance: 520\n" + OP_PROMPT)
             client.command(
                 "add 1000000",
                 b">>> [Error] Balance out of range.\n" + OP_PROMPT,
             )
+            client.command("add -20", b">>> Pending balance: 500\n" + OP_PROMPT)
             client.command("abort", b">>> Transaction aborted.\n" + READY_PROMPT)
             client.command(
                 "read 902001",
                 b">>> Account 902001 balance: 500\n" + READY_PROMPT,
+            )
+            client.command(
+                "read 902002",
+                b">>> Account 902002 balance: 1200\n" + READY_PROMPT,
             )
             client.command_and_expect_close("exit", b">>> Client exit.\n")
         finally:
@@ -285,20 +396,70 @@ def task_1_3() -> None:
 
     if read_balance(902001) != 500:
         raise JudgeError("abort or rejected add modified accountRecord")
+    if read_balance(902002) != 1200:
+        raise JudgeError("abort modified account 902002")
 
-def task_1_4() -> None:
-    write_records(DEFAULT_BALANCES)
-    with ServerProcess() as server:
-        client = Client(server.port)
-        try:
-            client.command_and_expect_close(
-                "read 902000", b">>> [Error] Invalid command.\n"
-            )
-        finally:
-            client.close()
+# def task_1_4() -> None:
+#     write_records(DEFAULT_BALANCES)
+#     with ServerProcess() as server:
+#         client = Client(server.port)
+#         try:
+#             client.command_and_expect_close(
+#                 "read 902000", b">>> [Error] Invalid command.\n"
+#             )
+#         finally:
+#             client.close()
 
+##  Invalid account range / wrong-state transaction command
+def task_3() -> None:
+    invalid_commands = [
+        "read 902000",  # account id below range
+        "read 902021",  # account id above range
+        "add 100",      # add is invalid in READY state
+        "commit",       # commit is invalid in READY state
+    ]
 
-def task_2() -> None:
+    for command in invalid_commands:
+        write_records(DEFAULT_BALANCES)
+        with ServerProcess() as server:
+            client = Client(server.port)
+            try:
+                client.command_and_expect_close(
+                    command, b">>> [Error] Invalid command.\n"
+                )
+            finally:
+                client.close() 
+
+# def task_2() -> None:
+#     write_records(DEFAULT_BALANCES)
+#     with ServerProcess() as server:
+#         owner = Client(server.port)
+#         other = Client(server.port)
+#         try:
+#             owner.command(
+#                 "begin 902001",
+#                 b">>> Transaction started on account 902001.\n"
+#                 b">>> Current balance: 500\n"
+#                 + OP_PROMPT,
+#             )
+#             other.command("read 902001", b">>> Locked.\n" + READY_PROMPT)
+#             other.command(
+#                 "read 902002",
+#                 b">>> Account 902002 balance: 1200\n" + READY_PROMPT,
+#             )
+#             owner.command("abort", b">>> Transaction aborted.\n" + READY_PROMPT)
+#             other.command(
+#                 "read 902001",
+#                 b">>> Account 902001 balance: 500\n" + READY_PROMPT,
+#             )
+#             owner.command_and_expect_close("exit", b">>> Client exit.\n")
+#             other.command_and_expect_close("exit", b">>> Client exit.\n")
+#         finally:
+#             owner.close()
+#             other.close()
+
+##  same-server multi-client lock workflow
+def task_4() -> None:
     write_records(DEFAULT_BALANCES)
     with ServerProcess() as server:
         owner = Client(server.port)
@@ -311,28 +472,67 @@ def task_2() -> None:
                 + OP_PROMPT,
             )
             other.command("read 902001", b">>> Locked.\n" + READY_PROMPT)
+            other.command("begin 902001", b">>> Locked.\n" + READY_PROMPT)
+
             other.command(
-                "read 902002",
-                b">>> Account 902002 balance: 1200\n" + READY_PROMPT,
+                "begin 902002",
+                b">>> Transaction started on account 902002.\n"
+                b">>> Current balance: 1200\n"
+                + OP_PROMPT,
             )
+            other.command("add -200", b">>> Pending balance: 1000\n" + OP_PROMPT)
+            other.command(
+                "commit",
+                b">>> Transaction committed.\n"
+                b">>> Account 902002 balance: 1000\n"
+                + READY_PROMPT,
+            )
+
             owner.command("abort", b">>> Transaction aborted.\n" + READY_PROMPT)
+
             other.command(
-                "read 902001",
-                b">>> Account 902001 balance: 500\n" + READY_PROMPT,
+                "begin 902001",
+                b">>> Transaction started on account 902001.\n"
+                b">>> Current balance: 500\n"
+                + OP_PROMPT,
             )
+            other.command("abort", b">>> Transaction aborted.\n" + READY_PROMPT)
+
             owner.command_and_expect_close("exit", b">>> Client exit.\n")
             other.command_and_expect_close("exit", b">>> Client exit.\n")
         finally:
             owner.close()
             other.close()
 
+    if read_balance(902001) != 500:
+        raise JudgeError("abort modified account 902001")
+    if read_balance(902002) != 1000:
+        raise JudgeError("commit did not update account 902002")
+
+## fragmented input hint + last account offset
+def task_5() -> None:
+    write_records(DEFAULT_BALANCES)
+    with ServerProcess() as server:
+        client = Client(server.port)
+        try:
+            client.send_raw(b"read ")
+            client.send_raw(b"902")
+            client.send_raw(b"020\n")
+            client.expect(
+                b">>> Account 902020 balance: 150\n" + READY_PROMPT
+            )
+            client.command_and_expect_close("exit", b">>> Client exit.\n")
+        finally:
+            client.close()
+
 
 TASKS: dict[str, Callable[[], None]] = {
-    "1-1": task_1_1,
-    "1-2": task_1_2,
-    "1-3": task_1_3,
-    "1-4": task_1_4,
+    "1": task_1,
     "2": task_2,
+    "2-1": task_2_1,
+    "3": task_3,
+    "4": task_4,
+    "5": task_5,
 }
 
 
